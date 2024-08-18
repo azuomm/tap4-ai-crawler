@@ -8,7 +8,6 @@ from fastapi import FastAPI, Header, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 from website_crawler import WebsitCrawler
-import datetime
 
 app = FastAPI()
 website_crawler = WebsitCrawler()
@@ -23,36 +22,37 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-@app.route('/site/crawl', methods=['POST'])
-def scrape():
-    data = request.get_json()
-    url = data.get('url')
-    tags = data.get('tags')  # tag数组
-    languages = data.get('languages')  # 需要翻译的多语言列表
+class URLRequest(BaseModel):
+    url: str
+    tags: Optional[List[str]] = None
+    languages: Optional[List[str]] = None
 
-    auth_header = request.headers.get('Authorization')
 
-    if not url:
-        return jsonify({'error': 'URL is required'}), 400
+class AsyncURLRequest(URLRequest):
+    callback_url: str
+    key: str
 
-    if not auth_header:
-        return jsonify({'error': 'Authorization is required'}), 400
 
-    if auth_secret != auth_header:
-        return jsonify({'error': 'Authorization is error'}), 400
+@app.post('/site/crawl')
+async def scrape(request: URLRequest, authorization: Optional[str] = Header(None)):
+    url = request.url
+    tags = request.tags  # tag数组
+    languages = request.languages  # 需要翻译的多语言列表
 
-    loop = asyncio.get_event_loop()
-    result = loop.run_until_complete(website_crawler.scrape_website(url.strip(), tags, languages))
+    if system_auth_secret:
+        # 配置了非空的auth_secret，才验证
+        validate_authorization(authorization)
 
+    result = await website_crawler.scrape_website(url.strip(), tags, languages)
+
+    # 若result为None,则 code="10001"，msg="处理异常，请稍后重试"
     code = 200
     msg = 'success'
     if result is None:
         code = 10001
         msg = 'fail'
-    else:
-        # Ensure the result doesn't contain the full website_data
-        result.pop('website_data', None)
 
+    # 将数据映射到 'data' 键下
     response = {
         'code': code,
         'msg': msg,
@@ -61,51 +61,42 @@ def scrape():
     return response
 
 
-@app.route('/site/crawl_async', methods=['POST'])
-def scrape_async():
-    data = request.get_json()
-    url = data.get('url')
-    callback_url = data.get('callback_url')
-    key = data.get('key')  # 请求回调接口，放header Authorization: 'Bear key'
-    tags = data.get('tags')  # tag数组
-    languages = data.get('languages')  # 需要翻译的多语言列表
+@app.post('/site/crawl_async')
+async def scrape_async(background_tasks: BackgroundTasks, request: AsyncURLRequest,
+                       authorization: Optional[str] = Header(None)):
+    url = request.url
+    callback_url = request.callback_url
+    key = request.key  # 请求回调接口，放header Authorization: 'Bear key'
+    tags = request.tags  # tag数组
+    languages = request.languages  # 需要翻译的多语言列表
 
-    auth_header = request.headers.get('Authorization')
+    if system_auth_secret:
+        # 配置了非空的auth_secret，才验证
+        validate_authorization(authorization)
 
-    if not url:
-        return jsonify({'error': 'url is required'}), 400
-
-    if not callback_url:
-        return jsonify({'error': 'call_back_url is required'}), 400
-
-    if not auth_header:
-        return jsonify({'error': 'Authorization is required'}), 400
-
-    if auth_secret != auth_header:
-        return jsonify({'error': 'Authorization is error'}), 400
-
-    loop = asyncio.get_event_loop()
-
-    # 创建线程，传递参数
-    t = threading.Thread(target=async_worker, args=(loop, url, tags, languages, callback_url, key))
-    # 启动线程
-    t.start()
+    # 直接发起异步请求:使用background_tasks后台运行
+    background_tasks.add_task(async_worker, url.strip(), tags, languages, callback_url, key)
 
     # 若result为None,则 code="10001"，msg="处理异常，请稍后重试"
     code = 200
     msg = 'success'
-
-    # 将数据映射到 'data' 键下
     response = {
-        'code': 200,
-        'msg': 'success'
+        'code': code,
+        'msg': msg
     }
     return response
 
 
-def async_worker(loop, url, tags, languages, callback_url, key):
+def validate_authorization(authorization):
+    if not authorization:
+        raise HTTPException(status_code=400, detail="Missing Authorization header")
+    if 'Bearer ' + system_auth_secret != authorization:
+        raise HTTPException(status_code=401, detail="Authorization is error")
+
+
+async def async_worker(url, tags, languages, callback_url, key):
     # 爬虫处理封装为一个异步任务
-    result = loop.run_until_complete(website_crawler.scrape_website(url.strip(), tags, languages))
+    result = await website_crawler.scrape_website(url.strip(), tags, languages)
     # 通过requests post 请求调用call_back_url， 携带参数result， heaer 为key
     try:
         logger.info(f'callback begin:{callback_url}')
@@ -119,4 +110,6 @@ def async_worker(loop, url, tags, languages, callback_url, key):
 
 
 if __name__ == '__main__':
-    asyncio.run(app.run(host='0.0.0.0', port=8040, threaded=False))
+    import uvicorn
+
+    uvicorn.run(app, host="127.0.0.1", port=8040)
