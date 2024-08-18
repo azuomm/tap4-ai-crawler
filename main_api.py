@@ -1,17 +1,19 @@
-import asyncio
 import logging
 import os
-import threading
+from typing import List, Optional
+
 import requests
 from dotenv import load_dotenv
-from flask import Flask, request, jsonify
+from fastapi import FastAPI, Header, BackgroundTasks, HTTPException
+from pydantic import BaseModel
+
 from website_crawler import WebsitCrawler
 import datetime
 
-app = Flask(__name__)
+app = FastAPI()
 website_crawler = WebsitCrawler()
 load_dotenv()
-auth_secret = 'Bearer ' + os.getenv('AUTH_SECRET')
+system_auth_secret = os.getenv('AUTH_SECRET')
 
 # 设置日志记录
 logging.basicConfig(
@@ -25,8 +27,8 @@ logger = logging.getLogger(__name__)
 def scrape():
     data = request.get_json()
     url = data.get('url')
-    tags = data.get('tags', [])
-    languages = data.get('languages', [])
+    tags = data.get('tags')  # tag数组
+    languages = data.get('languages')  # 需要翻译的多语言列表
 
     auth_header = request.headers.get('Authorization')
 
@@ -56,7 +58,7 @@ def scrape():
         'msg': msg,
         'data': result
     }
-    return jsonify(response)
+    return response
 
 
 @app.route('/site/crawl_async', methods=['POST'])
@@ -64,9 +66,9 @@ def scrape_async():
     data = request.get_json()
     url = data.get('url')
     callback_url = data.get('callback_url')
-    key = data.get('key')
-    tags = data.get('tags', [])
-    languages = data.get('languages', [])
+    key = data.get('key')  # 请求回调接口，放header Authorization: 'Bear key'
+    tags = data.get('tags')  # tag数组
+    languages = data.get('languages')  # 需要翻译的多语言列表
 
     auth_header = request.headers.get('Authorization')
 
@@ -84,20 +86,27 @@ def scrape_async():
 
     loop = asyncio.get_event_loop()
 
+    # 创建线程，传递参数
     t = threading.Thread(target=async_worker, args=(loop, url, tags, languages, callback_url, key))
+    # 启动线程
     t.start()
 
+    # 若result为None,则 code="10001"，msg="处理异常，请稍后重试"
+    code = 200
+    msg = 'success'
+
+    # 将数据映射到 'data' 键下
     response = {
         'code': 200,
         'msg': 'success'
     }
-    return jsonify(response)
+    return response
 
 
 def async_worker(loop, url, tags, languages, callback_url, key):
+    # 爬虫处理封装为一个异步任务
     result = loop.run_until_complete(website_crawler.scrape_website(url.strip(), tags, languages))
-    if result:
-        result.pop('website_data', None)  # Remove website_data before sending
+    # 通过requests post 请求调用call_back_url， 携带参数result， heaer 为key
     try:
         logger.info(f'callback begin:{callback_url}')
         response = requests.post(callback_url, json=result, headers={'Authorization': 'Bearer ' + key})
