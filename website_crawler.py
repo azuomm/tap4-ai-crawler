@@ -3,6 +3,7 @@ import logging
 import time
 import random
 from pyppeteer import launch
+from util.supabase_util import SupabaseUtil
 
 from util.common_util import CommonUtil
 from util.llm_util import LLMUtil
@@ -36,12 +37,11 @@ global_agent_headers = [
 class WebsitCrawler:
     def __init__(self):
         self.browser = None
+        self.supabase = SupabaseUtil()
 
     # 爬取指定URL网页内容
     async def scrape_website(self, url, tags, languages):
-        # 开始爬虫处理
         try:
-            # 记录程序开始时间
             start_time = int(time.time())
             logger.info("正在处理：" + url)
             if not url.startswith('http://') and not url.startswith('https://'):
@@ -72,85 +72,60 @@ class WebsitCrawler:
             origin_content = await page.content()
             soup = BeautifulSoup(origin_content, 'html.parser')
 
-            # 通过标签名提取内容
-            title = soup.title.string.strip() if soup.title else ''
-
-            # 根据url提取域名生成name
             name = CommonUtil.get_name_by_url(url)
-
+            title = soup.title.string.strip() if soup.title else ''
+            content = soup.get_text()
+            
             # 获取网页描述
             description = ''
             meta_description = soup.find('meta', attrs={'name': 'description'})
             if meta_description:
                 description = meta_description['content'].strip()
-
             if not description:
                 meta_description = soup.find('meta', attrs={'property': 'og:description'})
                 description = meta_description['content'].strip() if meta_description else ''
 
-            logger.info(f"url:{url}, title:{title},description:{description}")
-
-            # 生成网站截图
-            image_key = oss.get_default_file_key(url)
-            dimensions = await page.evaluate(f'''(width, height) => {{
-                return {{
-                    width: {width},
-                    height: {height},
-                    deviceScaleFactor: window.devicePixelRatio
-                }};
-            }}''', width, height)
-            # 截屏并设置图片大小
-            screenshot_path = './' + url.replace("https://", "").replace("http://", "").replace("/", "").replace(".",
-                                                                                                                 "-") + '.png'
-            await page.screenshot({'path': screenshot_path, 'clip': {
-                'x': 0,
-                'y': 0,
-                'width': dimensions['width'],
-                'height': dimensions['height']
-            }})
-            # 上传图片，返回图片地址
-            screenshot_key = oss.upload_file_to_r2(screenshot_path, image_key)
-
-            # 生成缩略图
-            thumnbail_key = oss.generate_thumbnail_image(url, image_key)
-
-            # 抓取整个网页内容
-            content = soup.get_text()
-
-            # 使用llm工具处理content
+            # 使用LLM处理详细内容
             detail = llm.process_detail(content)
-            await page.close()
 
-            # 如果tags为非空数组，则使用llm工具处理tags
-            processed_tags = None
-            if tags and detail:
-                processed_tags = llm.process_tags('tag_list is:' + ','.join(tags) + '. content is: ' + detail)
+            # 生成和上传截图
+            image_key = oss.get_default_file_key(url)
+            screenshot_path = './' + url.replace("https://", "").replace("http://", "").replace("/", "").replace(".", "-") + '.png'
+            await page.screenshot({'path': screenshot_path, 'fullPage': True})
+            image_url = oss.upload_file_to_r2(screenshot_path, image_key)
+            thumbnail_url = oss.generate_thumbnail_image(url, image_key)
 
-            # 循环languages数组， 使用llm工具生成各种语言
-            processed_languages = []
-            if languages:
-                for language in languages:
-                    logger.info("正在处理" + url + "站点，生成" + language + "语言")
-                    processed_title = llm.process_language(language, title)
-                    processed_description = llm.process_language(language, description)
-                    processed_detail = llm.process_language(language, detail)
-                    processed_languages.append({'language': language, 'title': processed_title,
-                                                'description': processed_description, 'detail': processed_detail})
+            collection_time = datetime.datetime.now().isoformat()
+            website_data = str(soup)
+            star_rating = 0  # 默认值,可能需要从网页中提取或通过其他方式获取
+            category_name = tags[0] if tags else None  # 使用第一个标签作为分类,或者设置为None
 
-            logger.info(url + "站点处理成功")
-            return {
+            result = {
                 'name': name,
-                'url': url,
                 'title': title,
-                'description': description,
+                'content': content,
                 'detail': detail,
-                'screenshot_data': screenshot_key,
-                'screenshot_thumbnail_data': thumnbail_key,
-                'tags': processed_tags,
-                'languages': processed_languages,
+                'url': url,
+                'image_url': image_url,
+                'thumbnail_url': thumbnail_url,
+                'collection_time': collection_time,
+                'website_data': website_data,
+                'star_rating': star_rating,
+                'category_name': category_name
             }
+
+            # 保存到Supabase
+            db_result = self.supabase.insert_website_data(result)
+            if db_result:
+                logger.info(f"Data for {url} successfully stored in Supabase")
+            else:
+                logger.error(f"Failed to store data for {url} in Supabase")
+
+            await page.close()
+            return result
+
         except Exception as e:
-            logger.error("处理" + url + "站点异常，错误信息:", e)
+            logger.error(f"处理{url}站点异常，错误信息:", e)
             return None
         finally:
             # 计算程序执行时间

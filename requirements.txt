@@ -9,3 +9,5 @@ requests
 Pillow
 sentencepiece
 transformers
+supabase
+tenacity
