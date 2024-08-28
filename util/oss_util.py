@@ -76,7 +76,7 @@ class OSSUtil:
 
             # 如果提供了自定义域名
             if self.S3_CUSTOM_DOMAIN:
-                file_url = f"https://{self.S3_CUSTOM_DOMAIN}/{file_key}"
+                file_url = f"{self.S3_CUSTOM_DOMAIN}/{file_key}"
             else:
                 file_url = f"{self.S3_ENDPOINT_URL}/{self.S3_BUCKET_NAME}/{file_key}"
 
@@ -111,7 +111,7 @@ class OSSUtil:
 
         # 如果提供了自定义域名
         if self.S3_CUSTOM_DOMAIN:
-            file_url = f"https://{self.S3_CUSTOM_DOMAIN}/{thumbnail_key}"
+            file_url = f"{self.S3_CUSTOM_DOMAIN}/{thumbnail_key}"
         else:
             file_url = f"{self.S3_ENDPOINT_URL}/{self.S3_BUCKET_NAME}/{thumbnail_key}"
         logger.info(f"缩略图文件URL: {file_url}")

@@ -34,12 +34,26 @@ class CommonUtil:
     # 根据url提取域名/path，返回为-拼接的方式
     @staticmethod
     def get_name_by_url(url):
-        if url:
-            domain = urlparse(url).netloc
-            path= urlparse(url).path
+        if not url:
+            return "unnamed_site"
+        try:
+            parsed = urlparse(url)
+            domain = parsed.netloc or parsed.path
+            domain = domain.replace("www.", "")
+            path = parsed.path if parsed.netloc else ''
             if path and path.endswith("/"):
                 path = path[:-1]
-            return (domain.replace("www.","") + path.replace("/", "-")).replace(".", "-")
-        else:
-            return None
-
+            
+            # 构建名称，包括域名和路径
+            name = (domain + path).replace(".", "-").replace("/", "-")
+            
+            # Remove any non-alphanumeric characters except hyphens
+            name = ''.join(c for c in name if c.isalnum() or c == '-')
+            # Ensure the name is not empty
+            if not name:
+                name = "unnamed_site"
+            # Truncate the name if it's too long
+            return name[:50]  # Limit to 50 characters
+        except Exception as e:
+            logger.error(f"Error parsing URL {url}: {str(e)}")
+            return "unnamed_site"
